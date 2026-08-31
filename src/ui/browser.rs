@@ -15,8 +15,8 @@ use crate::{
     app::{Browser, BrowserEvent},
     model::{EntryKind, FileEntry, Location, SortDirection, SortKey},
     services::{
-        FileSource, LocationValidationError, OperationProvider, PreviewContent, content_family,
-        has_plain_text_extension, validate_basename,
+        FileSource, LocationValidationError, OperationProvider, PreviewContent,
+        backend_unavailable_message, content_family, has_plain_text_extension, validate_basename,
     },
 };
 
@@ -2173,11 +2173,11 @@ impl ViewState {
                 state.clear_location_error();
                 state.location_stack.set_visible_child_name("breadcrumbs");
                 state.browser.focus_active();
-            } else if let Err(error) = result {
+            } else if let Err(error) = result
+                && let Some(message) = mount_failure_message(&location, &error)
+            {
                 state.location_entry.add_css_class("error");
-                state
-                    .location_error
-                    .set_text(&format!("Unable to connect: {error}"));
+                state.location_error.set_text(&message);
                 state.location_error.set_visible(true);
                 state.location_entry.grab_focus();
             }
@@ -2193,12 +2193,10 @@ impl ViewState {
         self.mount_location(location.clone(), strategy, move |state, result| {
             if mount_result_is_ok(&result) {
                 state.browser.descend(parent_depth, location.clone());
-            } else if let Err(mount_error) = result {
-                show_error_dialog(
-                    &state.overlay,
-                    "Unable to connect",
-                    &mount_error.to_string(),
-                );
+            } else if let Err(error) = result
+                && let Some(message) = mount_failure_message(&location, &error)
+            {
+                show_error_dialog(&state.overlay, "Unable to connect", &message);
             }
         });
     }
@@ -5250,6 +5248,25 @@ fn mount_result_is_ok(result: &Result<(), glib::Error>) -> bool {
         Ok(()) => true,
         Err(error) => error.matches(gio::IOErrorEnum::AlreadyMounted),
     }
+}
+
+/// Decides what, if anything, to tell the user about a failed mount attempt.
+/// A user-initiated cancel (the GTK credential dialog's Cancel button, or a
+/// backend that already reported the failure to the operation itself) should
+/// quietly return to the prior state rather than surface an alarming error,
+/// per lgse/strata#20's "cancelling authentication returns to the prior
+/// committed location" requirement.
+fn mount_failure_message(location: &Location, error: &glib::Error) -> Option<String> {
+    if error.matches(gio::IOErrorEnum::Cancelled) || error.matches(gio::IOErrorEnum::FailedHandled)
+    {
+        return None;
+    }
+    if error.matches(gio::IOErrorEnum::NotSupported) {
+        return Some(backend_unavailable_message(
+            location.uri_value().unwrap_or_default(),
+        ));
+    }
+    Some(format!("Unable to connect: {error}"))
 }
 
 fn is_trash_root(location: &Location) -> bool {

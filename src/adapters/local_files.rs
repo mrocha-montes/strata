@@ -15,7 +15,7 @@ use crate::{
     model::{EntryKind, FileEntry, Location, MetadataValue},
     services::{
         DirectoryChange, DirectoryEvent, DirectoryRequest, FileSource, LoadHandle,
-        LocationValidationError,
+        LocationValidationError, backend_unavailable_message,
     },
 };
 
@@ -44,6 +44,19 @@ fn location_for_file(file: &gio::File) -> Location {
     file.path()
         .map(Location::local)
         .unwrap_or_else(|| Location::uri(file.uri()))
+}
+
+/// A location safe to write to structured logs: local paths are logged as-is,
+/// but a remote URI is reduced to its scheme so host, share, and path (and any
+/// user-info) never reach the logs (lgse/strata#20, lgse/strata#14).
+fn log_safe_location(location: &Location) -> String {
+    match location.uri_value() {
+        Some(uri) => match uri.split_once("://") {
+            Some((scheme, _rest)) => format!("{scheme}://…"),
+            None => "uri".to_owned(),
+        },
+        None => location.display_path(),
+    }
 }
 
 fn entry_from_info(location: Location, info: gio::FileInfo) -> FileEntry {
@@ -109,6 +122,10 @@ impl FileSource for LocalFileSource {
             .map_err(|error| {
                 if error.matches(gio::IOErrorEnum::NotMounted) {
                     LocationValidationError::NotMounted(location.clone())
+                } else if error.matches(gio::IOErrorEnum::NotSupported) {
+                    LocationValidationError::BackendUnavailable(backend_unavailable_message(
+                        location.uri_value().unwrap_or_default(),
+                    ))
                 } else {
                     LocationValidationError::Unavailable(error.to_string())
                 }
@@ -127,9 +144,9 @@ impl FileSource for LocalFileSource {
     fn enumerate(&self, request: DirectoryRequest, emit: Rc<dyn Fn(DirectoryEvent)>) -> LoadHandle {
         let request_id = request.id;
         let location = request.location.clone();
-        let display_location = location.display_path();
+        let logged_location = log_safe_location(&location);
         let started = Instant::now();
-        tracing::info!(request_id = request_id.0, location = %display_location, "directory load started");
+        tracing::info!(request_id = request_id.0, location = %logged_location, "directory load started");
 
         let task = glib::MainContext::default().spawn_local(async move {
             let directory = location

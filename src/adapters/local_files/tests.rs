@@ -83,6 +83,23 @@ fn unmounted_network_shares_are_treated_as_directories() {
 }
 
 #[test]
+fn remote_locations_are_logged_without_host_share_or_credentials() {
+    let logged = log_safe_location(&Location::uri("smb://user:secret@host/share/nested"));
+
+    assert_eq!(logged, "smb://…");
+    assert!(!logged.contains("host"));
+    assert!(!logged.contains("share"));
+    assert!(!logged.contains("secret"));
+}
+
+#[test]
+fn local_locations_are_logged_with_their_full_path() {
+    let logged = log_safe_location(&Location::local("/home/user/Documents"));
+
+    assert_eq!(logged, "/home/user/Documents");
+}
+
+#[test]
 fn symlink_targets_and_broken_links_are_distinguished() -> Result<(), Box<dyn Error>> {
     use std::os::unix::fs::symlink;
 
